@@ -156,6 +156,10 @@ void WP_SaberReturn( gentity_t *self, gentity_t *saber );
 void WP_SaberBlockNonRandom( gentity_t *self, vec3_t hitloc, qboolean missileBlock );
 qboolean WP_ForcePowerAvailable( gentity_t *self, forcePowers_t forcePower, int overrideAmt );
 void WP_ForcePowerDrain( gentity_t *self, forcePowers_t forcePower, int overrideAmt );
+//dual saber spin throw, left saber in flight
+gentity_t *WP_DualThrowLeftSaberEnt( gentity_t *self );
+qboolean WP_DualThrowLeftSaberReturning( gentity_t *self );
+void WP_DualThrowLeftSaberReturn( gentity_t *self );
 void WP_DeactivateSaber( gentity_t *self, qboolean clearLength = qfalse );
 qboolean FP_ForceDrainGrippableEnt( gentity_t *victim );
 
@@ -1627,7 +1631,8 @@ qboolean WP_SaberApplyDamage( gentity_t *ent, float baseDamage, int baseDFlags,
 						}
 						if ( thrownSaber )
 						{
-							inflictor = &g_entities[ent->client->ps.saberEntityNum];
+							gentity_t *leftSaberEnt = (saberNum == 1) ? WP_DualThrowLeftSaberEnt( ent ) : NULL;
+							inflictor = leftSaberEnt ? leftSaberEnt : &g_entities[ent->client->ps.saberEntityNum];
 						}
 						int damage = 0;
 						if ( !WP_SaberBladeUseSecondBladeStyle( &ent->client->ps.saber[saberNum], bladeNum )
@@ -4598,7 +4603,9 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 		}
 	}
 
-	if ( ent->client->ps.saberInFlight )
+	//dual saber spin throw: is this the left saber flying on its own?
+	const qboolean leftSaberFlying = (qboolean)(saberNum == 1 && WP_DualThrowLeftSaberEnt( ent ) != NULL);
+	if ( ent->client->ps.saberInFlight || leftSaberFlying )
 	{//flying sabers are much more deadly
 		//unless you're dead
 		if ( ent->health <= 0 && g_saberRealisticCombat->integer < 2 )
@@ -4608,8 +4615,8 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 			return;
 		}
 		//or unless returning
-		else if ( ent->client->ps.saberEntityState == SES_RETURNING
-			&& !(ent->client->ps.saber[0].saberFlags&SFL_RETURN_DAMAGE) )//type != SABER_STAR )
+		else if ( (leftSaberFlying ? WP_DualThrowLeftSaberReturning( ent ) : (ent->client->ps.saberEntityState == SES_RETURNING))
+			&& !(ent->client->ps.saber[saberNum].saberFlags&SFL_RETURN_DAMAGE) )//type != SABER_STAR )
 		{//special case, since we're returning, chances are if we hit something
 			//it's going to be butt-first.  So do less damage.
 			baseDamage = 0.1f;
@@ -5071,7 +5078,7 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 		}
 	}
 
-	if ( (saberHitFraction < 1.0f||(sabersCrossed>=0&&sabersCrossed<=32.0f)) && (ent->client->ps.weaponstate == WEAPON_FIRING || ent->client->ps.saberInFlight || G_InCinematicSaberAnim( ent ) ) )
+	if ( (saberHitFraction < 1.0f||(sabersCrossed>=0&&sabersCrossed<=32.0f)) && (ent->client->ps.weaponstate == WEAPON_FIRING || ent->client->ps.saberInFlight || leftSaberFlying || G_InCinematicSaberAnim( ent ) ) )
 	{// The saber (in-hand) hit another saber, mano.
 		qboolean inFlightSaberBlocked = qfalse;
 		qboolean collisionResolved = qfalse;
@@ -5112,6 +5119,10 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 		{//saber was blocked, return it
 			inFlightSaberBlocked = qtrue;
 		}
+		else if ( leftSaberFlying && !WP_DualThrowLeftSaberReturning( ent ) )
+		{//dual saber spin throw: flying left saber was blocked, bring it back
+			WP_DualThrowLeftSaberReturn( ent );
+		}
 
 		//FIXME: based on strength, position and angle of attack & defense, decide if:
 		//	defender and attacker lock sabers
@@ -5122,7 +5133,7 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 
 		//Check deflections and broken parries
 		if ( hitOwner && hitOwner->health > 0 && ent->health > 0 //both are alive
-			&& !inFlightSaberBlocked && hitOwner->client && !hitOwner->client->ps.saberInFlight && !ent->client->ps.saberInFlight//both have sabers in-hand
+			&& !inFlightSaberBlocked && !leftSaberFlying && hitOwner->client && !hitOwner->client->ps.saberInFlight && !ent->client->ps.saberInFlight//both have sabers in-hand
 			&& ent->client->ps.saberBlocked != BLOCKED_PARRY_BROKEN
 			&& ent->client->ps.saberLockTime < level.time
 			&& hitOwner->client->ps.saberLockTime < level.time )
@@ -5753,7 +5764,7 @@ void WP_SaberDamageTrace( gentity_t *ent, int saberNum, int bladeNum )
 		}
 	}
 
-	if ( WP_SaberApplyDamage( ent, baseDamage, baseDFlags, brokenParry, saberNum, bladeNum, (qboolean)(saberNum==0&&ent->client->ps.saberInFlight) ) )
+	if ( WP_SaberApplyDamage( ent, baseDamage, baseDFlags, brokenParry, saberNum, bladeNum, (qboolean)((saberNum==0&&ent->client->ps.saberInFlight)||leftSaberFlying) ) )
 	{//actually did damage to something
 #ifndef FINAL_BUILD
 		if ( d_saberCombat->integer )
@@ -6406,6 +6417,210 @@ gentity_t *WP_SaberFindEnemy( gentity_t *self, gentity_t *saber )
 	return bestEnt;
 }
 
+//=========================================================================================
+// DUAL SABER SPIN THROW (BOTH_ALORA_SPIN_THROW)
+// Dual sabers (SS_DUAL) + Saber Throw level 3: hold USE and press ALT_ATTACK.
+// The player spins like Alora, BOTH sabers are thrown out of the spin and home in on the
+// chosen target. The right saber uses the normal thrown-saber entity, the left saber gets
+// its own temporary entity ("lightsaber_left") that flies, homes, comes back and is caught.
+//=========================================================================================
+// tweak these
+#define DUALTHROW_COST			20		// force points taken (once) when the move starts
+#define DUALTHROW_LAUNCH_FRAC	0.45f	// part of the spin anim (0..1) when the sabers leave the hands
+#define DUALTHROW_HOMING_TIME	2000	// ms the thrown sabers keep chasing their target
+#define DUALTHROW_SEEK_RANGE	1024.0f	// how far away a target can be
+#define DUALTHROW_SEEK_DOT		0.5f	// how close to the crosshair a target must be (0.5 = 60 degree cone)
+#define DUALTHROW_SABER_SPEED	700.0f	// flying speed of the homing sabers (normal throw = 500)
+#define DUALTHROW_LEFT_DIST		400.0f	// how far the left saber flies when there is no target
+#define DUALTHROW_LEFT_RETURN	900.0f	// speed of the left saber coming back
+#define DUALTHROW_LEFT_MAXTIME	8000	// safety: the left saber always comes back to the hand after this
+
+#define DUALTHROW_LEFT_CLASSNAME	"lightsaber_left"
+
+enum
+{
+	LEFTSABER_IN_HAND = 0,
+	LEFTSABER_LEAVING,
+	LEFTSABER_RETURNING
+};
+
+typedef struct
+{
+	int		launchTime;		// when to let go of the sabers (0 = nothing pending)
+	int		homingEndTime;	// until when the right thrown saber chases targetNum (0 = not homing)
+	int		targetNum;		// who the sabers are thrown at
+	//left saber
+	int		leftState;		// LEFTSABER_*
+	int		leftEntNum;		// the flying left saber entity
+	int		leftLaunchTime;
+	int		leftHomingEndTime;
+	int		leftTargetNum;	// who the left saber chases (ENTITYNUM_NONE = nobody)
+	vec3_t	leftDest;		// where to fly when there is no target
+	int		nextOrphanCheck;
+} dualSpinThrow_t;
+
+static dualSpinThrow_t	dualSpinThrow[MAX_GENTITIES];
+
+static void WP_DualThrowReset( gentity_t *self )
+{
+	if ( self && self->s.number >= 0 && self->s.number < MAX_GENTITIES )
+	{
+		dualSpinThrow[self->s.number].launchTime = 0;
+		dualSpinThrow[self->s.number].homingEndTime = 0;
+		dualSpinThrow[self->s.number].targetNum = ENTITYNUM_NONE;
+		//NOTE: the left saber is not touched here, it has its own life
+	}
+}
+
+//returns the flying left saber of this client, or NULL if it's in the hand
+//(also used by bg_pmove/bg_panimate and cgame, they're in the same module in SP)
+gentity_t *WP_DualThrowLeftSaberEnt( gentity_t *self )
+{
+	if ( !self || !self->client || self->s.number < 0 || self->s.number >= MAX_GENTITIES )
+	{
+		return NULL;
+	}
+	dualSpinThrow_t *dst = &dualSpinThrow[self->s.number];
+	if ( dst->leftState == LEFTSABER_IN_HAND
+		|| dst->leftEntNum <= 0 || dst->leftEntNum >= ENTITYNUM_WORLD )
+	{
+		return NULL;
+	}
+	gentity_t *ls = &g_entities[dst->leftEntNum];
+	if ( !ls->inuse || ls->owner != self || !ls->classname || Q_stricmp( ls->classname, DUALTHROW_LEFT_CLASSNAME ) )
+	{//not ours anymore (map change, etc.) - WP_DualThrowRunLeftSaber will clean up
+		return NULL;
+	}
+	return ls;
+}
+
+qboolean WP_DualThrowLeftSaberReturning( gentity_t *self )
+{
+	if ( !WP_DualThrowLeftSaberEnt( self ) )
+	{
+		return qfalse;
+	}
+	return (qboolean)(dualSpinThrow[self->s.number].leftState == LEFTSABER_RETURNING);
+}
+
+void WP_DualThrowLeftSaberReturn( gentity_t *self )
+{
+	if ( WP_DualThrowLeftSaberEnt( self ) )
+	{
+		dualSpinThrow[self->s.number].leftState = LEFTSABER_RETURNING;
+	}
+}
+
+//unlike WP_SaberValidateEnemy, this one also allows other force users (Jedi/Sith) as targets
+static qboolean WP_DualThrowValidTarget( gentity_t *self, gentity_t *ent )
+{
+	if ( !ent || ent == self || !ent->inuse || !ent->client )
+	{
+		return qfalse;
+	}
+	if ( ent->health <= 0 || (ent->flags&FL_NOTARGET) )
+	{
+		return qfalse;
+	}
+	if ( ent->client->playerTeam == self->client->playerTeam )
+	{//don't throw at friends
+		return qfalse;
+	}
+	if ( ent->client->playerTeam == TEAM_NEUTRAL && ent != self->enemy )
+	{//don't throw at civilians unless we're already fighting them
+		return qfalse;
+	}
+	return qtrue;
+}
+
+static gentity_t *WP_DualThrowFindTarget( gentity_t *self )
+{
+	gentity_t	*entityList[MAX_GENTITIES];
+	gentity_t	*bestEnt = NULL;
+	float		bestRating = -1.0f;
+	vec3_t		mins, maxs, forward, dir;
+	vec3_t		eye;
+
+	VectorCopy( self->client->renderInfo.eyePoint, eye );
+	AngleVectors( self->client->ps.viewangles, forward, NULL, NULL );
+
+	for ( int i = 0; i < 3; i++ )
+	{
+		mins[i] = self->currentOrigin[i] - DUALTHROW_SEEK_RANGE;
+		maxs[i] = self->currentOrigin[i] + DUALTHROW_SEEK_RANGE;
+	}
+
+	int numListedEntities = gi.EntitiesInBox( mins, maxs, entityList, MAX_GENTITIES );
+	for ( int e = 0; e < numListedEntities; e++ )
+	{
+		gentity_t *ent = entityList[e];
+		if ( !WP_DualThrowValidTarget( self, ent ) )
+		{
+			continue;
+		}
+		if ( !gi.inPVS( self->currentOrigin, ent->currentOrigin ) )
+		{//not even potentially visible
+			continue;
+		}
+		if ( !G_ClearLOS( self, eye, ent ) )
+		{//can't see him
+			continue;
+		}
+		VectorSubtract( ent->currentOrigin, eye, dir );
+		float dist = VectorNormalize( dir );
+		if ( dist > DUALTHROW_SEEK_RANGE )
+		{
+			continue;
+		}
+		float dot = DotProduct( forward, dir );
+		if ( dot < DUALTHROW_SEEK_DOT )
+		{//not near the crosshair
+			continue;
+		}
+		//mostly where we aim, a bit how close he is
+		float rating = dot*2.0f + (1.0f - dist/DUALTHROW_SEEK_RANGE);
+		if ( ent == self->enemy )
+		{//prefer the one we're already fighting
+			rating += 0.5f;
+		}
+		if ( rating > bestRating )
+		{
+			bestRating = rating;
+			bestEnt = ent;
+		}
+	}
+	return bestEnt;
+}
+
+//returns the target the thrown saber must chase right now, or NULL
+static gentity_t *WP_DualThrowHomingTarget( gentity_t *self )
+{
+	if ( !self || !self->client || self->s.number < 0 || self->s.number >= MAX_GENTITIES )
+	{
+		return NULL;
+	}
+	dualSpinThrow_t *dst = &dualSpinThrow[self->s.number];
+	if ( !dst->homingEndTime )
+	{
+		return NULL;
+	}
+	if ( dst->homingEndTime < level.time
+		|| !self->client->ps.saberInFlight
+		|| self->client->ps.saberEntityState != SES_LEAVING
+		|| dst->targetNum < 0 || dst->targetNum >= ENTITYNUM_WORLD )
+	{//done
+		dst->homingEndTime = 0;
+		return NULL;
+	}
+	gentity_t *target = &g_entities[dst->targetNum];
+	if ( !WP_DualThrowValidTarget( self, target ) )
+	{//died or became invalid
+		dst->homingEndTime = 0;
+		return NULL;
+	}
+	return target;
+}
+
 void WP_RunSaber( gentity_t *self, gentity_t *saber )
 {
 	vec3_t		origin, oldOrg;
@@ -6489,7 +6704,17 @@ void WP_RunSaber( gentity_t *self, gentity_t *saber )
 			}
 			VectorMA( saberHome, self->client->ps.saberEntityDist, forward, saberDest );
 
-			if ( self->client->ps.forcePowerLevel[FP_SABERTHROW] > FORCE_LEVEL_2
+			gentity_t *spinTarget = WP_DualThrowHomingTarget( self );
+			if ( spinTarget )
+			{//dual saber spin throw: chase the chosen target, Jedi included
+				VectorCopy( spinTarget->currentOrigin, saberDest );
+				saberDest[2] += spinTarget->maxs[2]/2.0f;
+				self->client->ps.saberEntityDist = Distance( self->client->renderInfo.handRPoint, spinTarget->currentOrigin );
+				saber->enemy = spinTarget;
+				enemy = spinTarget;
+				saberSpeed = DUALTHROW_SABER_SPEED;
+			}
+			else if ( self->client->ps.forcePowerLevel[FP_SABERTHROW] > FORCE_LEVEL_2
 				&& self->client->ps.saberEntityState == SES_LEAVING )
 			{//max level
 				if ( self->enemy &&
@@ -6838,6 +7063,8 @@ void WP_SaberCatch( gentity_t *self, gentity_t *saber, qboolean switchToSaber )
 	{
 		//clear the enemy
 		saber->enemy = NULL;
+		//stop any dual saber spin throw homing
+		WP_DualThrowReset( self );
 //===FIXME!!!==============================================================================================
 	//We should copy the thrown saber's g2 instance to the right-hand saber
 	//When you catch it, and vice-versa when you throw it!!!
@@ -6983,6 +7210,470 @@ const char *saberColorStringForColor[SABER_PURPLE+1] =
 };
 
 // Check if we are throwing it, launch it if needed, update position if needed.
+//----------------------------------------------------------------------------------------
+// LEFT SABER IN FLIGHT
+//----------------------------------------------------------------------------------------
+static void WP_DualThrowCatchLeftSaber( gentity_t *self, qboolean playSound )
+{
+	dualSpinThrow_t	*dst = &dualSpinThrow[self->s.number];
+	gentity_t		*ls = WP_DualThrowLeftSaberEnt( self );
+
+	if ( ls )
+	{
+		if ( playSound )
+		{
+			G_Sound( self, G_SoundIndex( "sound/weapons/saber/saber_catch.wav" ) );
+		}
+		G_FreeEntity( ls );
+	}
+	dst->leftState = LEFTSABER_IN_HAND;
+	dst->leftEntNum = 0;
+	dst->leftTargetNum = ENTITYNUM_NONE;
+
+	//put the model back in the left hand
+	if ( self->client->ps.weapon == WP_SABER
+		&& self->client->ps.dualSabers
+		&& self->weaponModel[1] <= 0 )
+	{
+		WP_SaberAddG2SaberModels( self, 1 );
+	}
+}
+
+//after a savegame load the static state is empty, but the flying left saber entity was saved
+//(and ClientSpawn already put the left saber model back in the hand): just get rid of it
+static void WP_DualThrowCleanOrphans( gentity_t *self )
+{
+	dualSpinThrow_t *dst = &dualSpinThrow[self->s.number];
+
+	if ( dst->nextOrphanCheck > level.time && dst->nextOrphanCheck - level.time <= 1000 )
+	{//checked recently
+		return;
+	}
+	dst->nextOrphanCheck = level.time + 1000;
+
+	for ( int i = MAX_CLIENTS; i < globals.num_entities; i++ )
+	{
+		gentity_t *e = &g_entities[i];
+		if ( !e->inuse || e->owner != self || !e->classname || Q_stricmp( e->classname, DUALTHROW_LEFT_CLASSNAME ) )
+		{
+			continue;
+		}
+		G_FreeEntity( e );
+		if ( self->client->ps.weapon == WP_SABER
+			&& self->client->ps.dualSabers
+			&& self->weaponModel[1] <= 0 )
+		{
+			WP_SaberAddG2SaberModels( self, 1 );
+		}
+	}
+}
+
+static qboolean WP_DualThrowLaunchLeftSaber( gentity_t *self, gentity_t *target )
+{
+	gclient_t		*client = self->client;
+	dualSpinThrow_t	*dst = &dualSpinThrow[self->s.number];
+	vec3_t			saberMins={-3.0f,-3.0f,-3.0f};
+	vec3_t			saberMaxs={3.0f,3.0f,3.0f};
+	trace_t			tr;
+
+	if ( !client->ps.dualSabers
+		|| !client->ps.saber[1].Active()
+		|| !client->ps.saber[1].model || !client->ps.saber[1].model[0]
+		|| (client->ps.saber[1].saberFlags&SFL_NOT_THROWABLE)
+		|| self->weaponModel[1] <= 0	//no left saber model (or no left hand!)
+		|| WP_DualThrowLeftSaberEnt( self ) )//already out
+	{
+		return qfalse;
+	}
+
+	//make sure it won't start in solid or on the other side of a wall
+	gi.trace( &tr, client->renderInfo.handLPoint, saberMins, saberMaxs, client->renderInfo.handLPoint, self->s.number, MASK_SOLID, (EG2_Collision)0, 0 );
+	if ( tr.startsolid || tr.allsolid )
+	{
+		return qfalse;
+	}
+	gi.trace( &tr, self->currentOrigin, vec3_origin, vec3_origin, client->renderInfo.handLPoint, self->s.number, MASK_SOLID, (EG2_Collision)0, 0 );
+	if ( tr.startsolid || tr.allsolid || tr.fraction < 1.0f )
+	{
+		return qfalse;
+	}
+
+	int modelIndex = G_ModelIndex( client->ps.saber[1].model );
+	if ( !modelIndex )
+	{
+		return qfalse;
+	}
+
+	gentity_t *ls = G_Spawn();
+	if ( !ls )
+	{
+		return qfalse;
+	}
+	ls->classname = DUALTHROW_LEFT_CLASSNAME;
+	ls->s.eType = ET_GENERAL;
+	ls->svFlags = SVF_USE_CURRENT_ORIGIN|SVF_BROADCAST;
+	ls->s.weapon = WP_SABER;
+	ls->owner = self;
+	ls->s.otherEntityNum = self->s.number;
+	ls->clipmask = MASK_SOLID;
+	ls->contents = 0;
+	ls->mass = 10;
+	VectorCopy( saberMins, ls->mins );
+	VectorCopy( saberMaxs, ls->maxs );
+
+	//the left saber's model
+	ls->playerModel = gi.G2API_InitGhoul2Model( ls->ghoul2, client->ps.saber[1].model, modelIndex, NULL_HANDLE, NULL_HANDLE, 0, 0 );
+	if ( ls->playerModel < 0 )
+	{
+		G_FreeEntity( ls );
+		return qfalse;
+	}
+	ls->s.modelindex = modelIndex;
+	if ( client->ps.saber[1].skin != NULL )
+	{//custom skin
+		int saberSkin = gi.RE_RegisterSkin( client->ps.saber[1].skin );
+		if ( saberSkin )
+		{
+			gi.G2API_SetSkin( &ls->ghoul2[ls->playerModel], G_SkinIndex( client->ps.saber[1].skin ), saberSkin );
+			ls->s.modelindex2 = saberSkin;
+		}
+	}
+	gi.G2API_AddBolt( &ls->ghoul2[ls->playerModel], "*flash" );
+
+	//place it in the left hand
+	VectorCopy( client->renderInfo.handLPoint, ls->currentOrigin );
+	VectorCopy( ls->currentOrigin, ls->s.pos.trBase );
+	ls->s.pos.trTime = level.time;
+	ls->s.pos.trType = TR_LINEAR;
+	VectorClear( ls->s.pos.trDelta );
+
+	//spin it (the other way than the right one)
+	VectorClear( ls->s.apos.trBase );
+	ls->s.apos.trBase[YAW] = client->ps.viewangles[YAW];
+	ls->s.apos.trBase[PITCH] = SABER_PITCH_HACK;
+	ls->s.apos.trTime = level.time;
+	ls->s.apos.trType = TR_LINEAR;
+	VectorClear( ls->s.apos.trDelta );
+	ls->s.apos.trDelta[YAW] = -1200;
+	VectorCopy( ls->s.apos.trBase, ls->currentAngles );
+
+	//safety: if the owner disappears (NPC removed) the saber removes itself
+	ls->e_ThinkFunc = thinkF_G_FreeEntity;
+	ls->nextthink = level.time + DUALTHROW_LEFT_MAXTIME + 1000;
+
+	gi.linkentity( ls );
+
+	//take it out of the left hand
+	gi.G2API_RemoveGhoul2Model( self->ghoul2, self->weaponModel[1] );
+	self->weaponModel[1] = -1;
+	client->ps.saber[1].ActivateTrail( 150 );
+
+	dst->leftState = LEFTSABER_LEAVING;
+	dst->leftEntNum = ls->s.number;
+	dst->leftLaunchTime = level.time;
+	dst->leftHomingEndTime = level.time + DUALTHROW_HOMING_TIME;
+	dst->leftTargetNum = target ? target->s.number : ENTITYNUM_NONE;
+	{//if nobody to chase, fly straight ahead
+		vec3_t fwd;
+		AngleVectors( client->ps.viewangles, fwd, NULL, NULL );
+		VectorMA( client->renderInfo.eyePoint, DUALTHROW_LEFT_DIST, fwd, dst->leftDest );
+	}
+	return qtrue;
+}
+
+//called every frame for the owner (from WP_SaberUpdate)
+static void WP_DualThrowRunLeftSaber( gentity_t *self )
+{
+	if ( !self->client || self->s.number < 0 || self->s.number >= MAX_GENTITIES )
+	{
+		return;
+	}
+	gclient_t		*client = self->client;
+	dualSpinThrow_t	*dst = &dualSpinThrow[self->s.number];
+	gentity_t		*ls = WP_DualThrowLeftSaberEnt( self );
+
+	if ( !ls )
+	{
+		if ( dst->leftState != LEFTSABER_IN_HAND )
+		{//lost it somehow (map change, freed...), just give it back
+			WP_DualThrowCatchLeftSaber( self, qfalse );
+		}
+		else
+		{
+			WP_DualThrowCleanOrphans( self );
+		}
+		return;
+	}
+	if ( self->weaponModel[1] > 0 )
+	{//something (script, pickup...) put a left saber model back in the hand while it's flying, keep the hand empty
+		gi.G2API_RemoveGhoul2Model( self->ghoul2, self->weaponModel[1] );
+		self->weaponModel[1] = -1;
+	}
+
+	if ( self->health <= 0
+		|| client->ps.weapon != WP_SABER
+		|| !client->ps.dualSabers
+		|| level.time < dst->leftLaunchTime
+		|| level.time - dst->leftLaunchTime > DUALTHROW_LEFT_MAXTIME )
+	{//can't (or shouldn't) keep it out, just put it back
+		WP_DualThrowCatchLeftSaber( self, qfalse );
+		return;
+	}
+	if ( !client->ps.saber[1].Active() )
+	{//turned off, call it back
+		dst->leftState = LEFTSABER_RETURNING;
+	}
+
+	//move it
+	vec3_t origin;
+	EvaluateTrajectory( &ls->s.pos, level.time, origin );
+	EvaluateTrajectory( &ls->s.apos, level.time, ls->currentAngles );
+	if ( dst->leftState == LEFTSABER_LEAVING )
+	{
+		trace_t tr;
+		gi.trace( &tr, ls->currentOrigin, ls->mins, ls->maxs, origin, self->s.number, ls->clipmask, (EG2_Collision)0, 0 );
+		if ( !tr.startsolid && !tr.allsolid )
+		{
+			VectorCopy( tr.endpos, ls->currentOrigin );
+		}
+		if ( tr.fraction < 1.0f || tr.startsolid )
+		{//hit a wall, bounce back to me
+			G_Sound( ls, G_SoundIndex( va( "sound/weapons/saber/bounce%d.wav", Q_irand( 1, 3 ) ) ) );
+			dst->leftState = LEFTSABER_RETURNING;
+		}
+	}
+	else
+	{//coming back: fly through everything so it never gets stuck
+		VectorCopy( origin, ls->currentOrigin );
+	}
+
+	//where to?
+	vec3_t	dest, dir;
+	float	speed = DUALTHROW_SABER_SPEED;
+	if ( dst->leftState == LEFTSABER_LEAVING )
+	{
+		gentity_t *target = NULL;
+		if ( dst->leftTargetNum >= 0 && dst->leftTargetNum < ENTITYNUM_WORLD )
+		{
+			target = &g_entities[dst->leftTargetNum];
+			if ( level.time >= dst->leftHomingEndTime || !WP_DualThrowValidTarget( self, target ) )
+			{//done with him (time's up or he's dead)
+				target = NULL;
+				dst->leftState = LEFTSABER_RETURNING;
+			}
+		}
+		else if ( level.time >= dst->leftHomingEndTime
+			|| DistanceSquared( ls->currentOrigin, dst->leftDest ) <= 24.0f*24.0f )
+		{//no target, flew as far as it should
+			dst->leftState = LEFTSABER_RETURNING;
+		}
+
+		if ( target )
+		{
+			VectorCopy( target->currentOrigin, dest );
+			dest[2] += target->maxs[2]/2.0f;
+		}
+		else
+		{
+			VectorCopy( dst->leftDest, dest );
+		}
+	}
+	if ( dst->leftState == LEFTSABER_RETURNING )
+	{
+		VectorCopy( client->renderInfo.handLPoint, dest );
+		speed = DUALTHROW_LEFT_RETURN;
+	}
+
+	VectorSubtract( dest, ls->currentOrigin, dir );
+	float dist = VectorNormalize( dir );
+
+	if ( dst->leftState == LEFTSABER_RETURNING )
+	{
+		if ( dist <= 32.0f || G_PointInBounds( ls->currentOrigin, self->absmin, self->absmax ) )
+		{//caught it
+			WP_DualThrowCatchLeftSaber( self, qtrue );
+			return;
+		}
+	}
+	else if ( dist < 50.0f )
+	{//slow down near the target so it cuts through him instead of flying past
+		speed = dist*2.0f + 30.0f;
+		if ( speed < 120.0f )
+		{
+			speed = 120.0f;
+		}
+	}
+
+	VectorScale( dir, speed, ls->s.pos.trDelta );
+	VectorCopy( ls->currentOrigin, ls->s.pos.trBase );
+	ls->s.pos.trTime = level.time;
+	ls->s.pos.trType = TR_LINEAR;
+	gi.linkentity( ls );
+}
+
+extern qboolean PM_HasAnimation( gentity_t *ent, int animation );
+static qboolean WP_DualThrowCanStart( gentity_t *self, usercmd_t *ucmd )
+{
+	gclient_t *client = self->client;
+
+	if ( !(ucmd->buttons&BUTTON_USE) )
+	{//must hold USE
+		return qfalse;
+	}
+	if ( !(ucmd->buttons&BUTTON_ALT_ATTACK) || (client->ps.pm_flags&PMF_ALT_ATTACK_HELD) )
+	{//must press (not hold) ALT_ATTACK
+		return qfalse;
+	}
+	if ( client->ps.weapon != WP_SABER
+		|| !client->ps.dualSabers					// we are a dual sabers user
+		|| client->ps.saberAnimLevel != SS_DUAL		// using both sabers
+		|| client->ps.saberInFlight					// right saber in hand
+		|| WP_DualThrowLeftSaberEnt( self ) )		// left saber in hand
+	{
+		return qfalse;
+	}
+	if ( client->ps.forcePowerLevel[FP_SABERTHROW] < FORCE_LEVEL_3 )
+	{//saber throw level 3 only
+		return qfalse;
+	}
+	if ( client->ps.groundEntityNum == ENTITYNUM_NONE
+		|| client->ps.weaponTime > 0
+		|| client->ps.saberLockTime > level.time
+		|| client->ps.torsoAnim == BOTH_ALORA_SPIN_THROW
+		|| PM_InKnockDown( &client->ps )
+		|| PM_SaberInBrokenParry( client->ps.saberMove )
+		|| (client->ps.saberEventFlags&SEF_INWATER) )
+	{//busy / can't do it right now
+		return qfalse;
+	}
+	if ( !self->s.number && (cg.zoomMode || in_camera) )
+	{
+		return qfalse;
+	}
+	if ( !PM_HasAnimation( self, BOTH_ALORA_SPIN_THROW )
+		|| PM_AnimLength( client->clientInfo.animFileIndex, BOTH_ALORA_SPIN_THROW ) <= 0 )
+	{//this model can't do it
+		return qfalse;
+	}
+	//knows saber throw, saber is throwable, not locked by script AND has DUALTHROW_COST force points
+	if ( !WP_ForcePowerUsable( self, FP_SABERTHROW, DUALTHROW_COST ) )
+	{
+		return qfalse;
+	}
+	return qtrue;
+}
+
+//same placement checks WP_SaberLaunch does, done here because we launch with noFail (force is already paid)
+static qboolean WP_DualThrowLaunchClear( gentity_t *self, gentity_t *saber )
+{
+	vec3_t	saberMins={-3.0f,-3.0f,-3.0f};
+	vec3_t	saberMaxs={3.0f,3.0f,3.0f};
+	trace_t	trace;
+
+	gi.trace( &trace, self->client->renderInfo.handRPoint, saberMins, saberMaxs, self->client->renderInfo.handRPoint, saber->s.number, MASK_SOLID, (EG2_Collision)0, 0 );
+	if ( trace.startsolid || trace.allsolid )
+	{
+		return qfalse;
+	}
+	gi.trace( &trace, self->currentOrigin, vec3_origin, vec3_origin, self->client->renderInfo.handRPoint, self->s.number, MASK_SOLID, (EG2_Collision)0, 0 );
+	if ( trace.startsolid || trace.allsolid || trace.fraction < 1.0f )
+	{
+		return qfalse;
+	}
+	return qtrue;
+}
+
+//returns qtrue if the normal saber throw code must be skipped this frame
+static qboolean WP_DualSpinThrow( gentity_t *self, gentity_t *saberent, usercmd_t *ucmd )
+{
+	if ( self->s.number < 0 || self->s.number >= MAX_GENTITIES )
+	{
+		return qfalse;
+	}
+	gclient_t		*client = self->client;
+	dualSpinThrow_t	*dst = &dualSpinThrow[self->s.number];
+
+	if ( dst->launchTime )
+	{//we're in the middle of the spin
+		if ( client->ps.torsoAnim != BOTH_ALORA_SPIN_THROW
+			|| client->ps.weapon != WP_SABER
+			|| client->ps.saberInFlight
+			|| self->health <= 0 )
+		{//got interrupted (knocked down, saber lock, etc.)
+			dst->launchTime = 0;
+			return qfalse;
+		}
+		//stand still while spinning (like Alora does)
+		ucmd->forwardmove = ucmd->rightmove = ucmd->upmove = 0;
+
+		if ( level.time >= dst->launchTime )
+		{//let go of both sabers now
+			dst->launchTime = 0;
+			gentity_t *target = WP_DualThrowFindTarget( self );
+			//left saber: its own flying entity
+			if ( WP_DualThrowLaunchLeftSaber( self, target ) )
+			{
+				WP_SaberSwingSound( self, 1, SWING_STRONG );
+			}
+			//right saber: the normal thrown saber entity
+			if ( WP_DualThrowLaunchClear( self, saberent )
+				&& WP_SaberLaunch( self, saberent, qtrue, qtrue ) )
+			{
+				//keep it out at least for the homing time, even if ALT_ATTACK was released
+				client->ps.forcePowerDebounce[FP_SABERTHROW] = level.time + DUALTHROW_HOMING_TIME;
+				client->ps.saber[0].ActivateTrail( 150 );
+				WP_SaberSwingSound( self, 0, SWING_STRONG );
+				if ( !self->s.number )
+				{
+					client->sess.missionStats.saberThrownCnt++;
+				}
+				if ( target )
+				{//home in on him
+					dst->targetNum = target->s.number;
+					dst->homingEndTime = level.time + DUALTHROW_HOMING_TIME;
+					saberent->enemy = target;
+					client->ps.saberEntityDist = Distance( client->renderInfo.handRPoint, target->currentOrigin );
+				}
+			}
+		}
+		return qtrue;
+	}
+
+	if ( !WP_DualThrowCanStart( self, ucmd ) )
+	{
+		return qfalse;
+	}
+
+	//start the spin
+	int animLength = PM_AnimLength( client->clientInfo.animFileIndex, BOTH_ALORA_SPIN_THROW );
+	NPC_SetAnim( self, SETANIM_BOTH, BOTH_ALORA_SPIN_THROW, SETANIM_FLAG_OVERRIDE|SETANIM_FLAG_HOLD );
+	client->ps.weaponTime = client->ps.torsoAnimTimer;
+	client->ps.saberMove = client->ps.saberMoveNext = LS_READY;
+
+	//both blades on, trails on so the spin looks like an attack
+	client->ps.SaberActivate();
+	client->ps.SaberActivateTrail( animLength );
+	WP_SaberSwingSound( self, 1, SWING_STRONG );
+
+	//drain force points by cost (once)
+	WP_ForcePowerDrain( self, FP_SABERTHROW, DUALTHROW_COST );
+	if ( !self->s.number )
+	{
+		client->sess.missionStats.forceUsed[FP_SABERTHROW]++;
+	}
+
+	dst->launchTime = level.time + (int)(animLength*DUALTHROW_LAUNCH_FRAC);
+	if ( dst->launchTime <= level.time )
+	{
+		dst->launchTime = level.time + 1;
+	}
+	dst->homingEndTime = 0;
+	dst->targetNum = ENTITYNUM_NONE;
+
+	ucmd->forwardmove = ucmd->rightmove = ucmd->upmove = 0;
+	return qtrue;
+}
+
 void WP_SaberThrow( gentity_t *self, usercmd_t *ucmd )
 {
 	vec3_t			saberDiff;
@@ -7022,6 +7713,12 @@ void WP_SaberThrow( gentity_t *self, usercmd_t *ucmd )
 	}
 	saberent = &g_entities[self->client->ps.saberEntityNum];
 
+	//dual saber spin throw (USE + ALT_ATTACK)
+	if ( WP_DualSpinThrow( self, saberent, ucmd ) )
+	{
+		return;
+	}
+
 	VectorSubtract( self->client->renderInfo.handRPoint, saberent->currentOrigin, saberDiff );
 
 	//is our saber in flight?
@@ -7035,6 +7732,7 @@ void WP_SaberThrow( gentity_t *self, usercmd_t *ucmd )
 		{//still holding it, not still holding attack from a previous throw, so throw it.
 			if ( !(self->client->ps.saberEventFlags&SEF_INWATER) && WP_SaberLaunch( self, saberent, qtrue ) )
 			{
+				WP_DualThrowReset( self );//normal throw, no spin-throw homing
 				if ( self->client && !self->s.number )
 				{
 					self->client->sess.missionStats.saberThrownCnt++;
@@ -7185,6 +7883,10 @@ void WP_SaberThrow( gentity_t *self, usercmd_t *ucmd )
 				{//still on
 					WP_SaberReturn( self, saberent );
 				}
+			}
+			else if ( WP_DualThrowHomingTarget( self ) )
+			{//dual saber spin throw is already paid for, don't drain while it's homing
+				self->client->ps.saberThrowTime = level.time;
 			}
 			else if ( level.time - self->client->ps.saberThrowTime >= 100 )
 			{
@@ -7874,6 +8576,9 @@ void WP_SaberUpdate( gentity_t *self, usercmd_t *ucmd )
 	{//never got one
 		return;
 	}
+
+	// Dual saber spin throw: fly / bring back the left saber
+	WP_DualThrowRunLeftSaber( self );
 
 	// Check if we are throwing it, launch it if needed, update position if needed.
 	WP_SaberThrow(self, ucmd);
