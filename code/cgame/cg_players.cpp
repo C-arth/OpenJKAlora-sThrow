@@ -5971,6 +5971,7 @@ void CG_CheckSaberInWater( centity_t *cent, centity_t *scent, int saberNum, int 
 	client->ps.saberEventFlags &= ~SEF_INWATER;
 }
 
+extern gentity_t *WP_DualThrowLeftSaberEnt( gentity_t *self );
 static void CG_AddSaberBladeGo( centity_t *cent, centity_t *scent, refEntity_t *saber, int renderfx, int modelIndex, vec3_t origin, vec3_t angles, int saberNum, int bladeNum )
 {
 	vec3_t	org_, end,//org_future,
@@ -6363,8 +6364,10 @@ Ghoul2 Insert End
 
 	VectorAdd( end, axis_[0], end );
 
+	//dual saber spin throw: is this the left saber flying on its own?
+	const qboolean leftSaberFlying = (qboolean)(saberNum == 1 && WP_DualThrowLeftSaberEnt( cent->gent ) != NULL);
 	// If the saber is in flight we shouldn't trace from the player to the muzzle point
-	if ( cent->gent->client->ps.saberInFlight && saberNum == 0 )
+	if ( (cent->gent->client->ps.saberInFlight && saberNum == 0) || leftSaberFlying )
 	{
 		trace.fraction = 1.0f;
 	}
@@ -6405,6 +6408,7 @@ Ghoul2 Insert End
 		   )
 		{//do no effects when idle
 			if ( !cent->gent->client->ps.saberInFlight
+				&& !leftSaberFlying
 				&& !PM_SaberInAttack( cent->gent->client->ps.saberMove )
 				&& !PM_SaberInTransitionAny( cent->gent->client->ps.saberMove )
 				&& !PM_SaberInSpecialAttack( cent->gent->client->ps.torsoAnim ) )
@@ -6415,6 +6419,7 @@ Ghoul2 Insert End
 		if ( cg_saberEntMarks.integer )
 		{
 			if ( cent->gent->client->ps.saberInFlight
+				|| leftSaberFlying
 				|| PM_SaberInAttack( cent->gent->client->ps.saberMove )
 				//|| PM_SaberInTransitionAny( cent->gent->client->ps.saberMove )
 				|| PM_SaberInSpecialAttack( cent->gent->client->ps.torsoAnim ) )
@@ -6734,6 +6739,22 @@ Ghoul2 Insert End
 		client->ps.saber[saberNum].blade[bladeNum].radius,
 		client->ps.saber[saberNum].blade[bladeNum].color,
 		renderfx, (qboolean)!noDlight );
+}
+
+//dual saber spin throw: blades of the flying left saber (scent is the "lightsaber_left" entity)
+void CG_AddLeftSaberBlade( centity_t *cent, centity_t *scent, int renderfx, vec3_t origin, vec3_t angles )
+{
+	if ( cent->gent && cent->gent->client && cent->gent->client->ps.dualSabers )
+	{
+		for ( int i = 0; i < cent->gent->client->ps.saber[1].numBlades; i++ )
+		{
+			CG_AddSaberBladeGo( cent, scent, NULL, renderfx, 0, origin, angles, 1, i );
+		}
+		if ( cent->gent->client->ps.saber[1].numBlades > 2 )
+		{// add blended light
+			CG_DoSaberLight( &cent->gent->client->ps.saber[1] );
+		}
+	}
 }
 
 void CG_AddSaberBlade( centity_t *cent, centity_t *scent, refEntity_t *saber, int renderfx, int modelIndex, vec3_t origin, vec3_t angles )
@@ -7394,7 +7415,8 @@ extern vmCvar_t	cg_thirdPersonAlpha;
 
 					if ( cent->gent->client->ps.saber[saberNum].blade[bladeNum].length > 0 )
 					{
-						if ( !cent->gent->client->ps.saberInFlight || saberNum != 0 )//&& cent->gent->client->ps.saberActive)
+						if ( (!cent->gent->client->ps.saberInFlight || saberNum != 0)//&& cent->gent->client->ps.saberActive)
+							&& !(saberNum == 1 && WP_DualThrowLeftSaberEnt( cent->gent )) )//left saber thrown by the dual saber spin throw
 						{//holding the saber in-hand
 		//						CGhoul2Info *currentModel = &cent->gent->ghoul2[1];
 		//						CGhoul2Info *nextModel = &cent->gent->ghoul2[1];
@@ -7450,7 +7472,8 @@ extern vmCvar_t	cg_thirdPersonAlpha;
 						CG_DoSaberLight( &cent->gent->client->ps.saber[0] );
 					}
 				}
-				if ( cent->gent->client->ps.saber[1].Length() > 0.0f )
+				if ( cent->gent->client->ps.saber[1].Length() > 0.0f
+					&& !WP_DualThrowLeftSaberEnt( cent->gent ) )
 				{
 					if ( cent->gent->client->ps.saber[1].numBlades > 2 )
 					{// add blended light
