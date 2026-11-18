@@ -33,6 +33,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "../game/g_vehicles.h"
 
 extern void CG_AddSaberBlade( centity_t *cent, centity_t *scent, refEntity_t *saber, int renderfx, int modelIndex, vec3_t origin, vec3_t angles);
+extern void CG_AddLeftSaberBlade( centity_t *cent, centity_t *scent, int renderfx, vec3_t origin, vec3_t angles );
 extern void CG_CheckSaberInWater( centity_t *cent, centity_t *scent, int saberNum, int modelIndex, vec3_t origin, vec3_t angles );
 extern void CG_ForcePushBlur( const vec3_t org, qboolean darkSide = qfalse );
 extern void CG_AddForceSightShell( refEntity_t *ent, centity_t *cent );
@@ -587,6 +588,37 @@ const weaponData_t  *wData = NULL;
 							&cg_entities[cent->gent->s.number], 0, cent->gent->weaponModel[0],
 							cent->lerpOrigin, cent->lerpAngles );
 					}
+				}
+			}
+			else if ( cent->gent->classname && !Q_stricmp( "lightsaber_left", cent->gent->classname ) )
+			{//left saber thrown by the dual saber spin throw
+				if ( cent->gent->owner->client )
+				{
+					if ( cent->gent->owner->client->ps.saber[1].Active() )
+					{//spinning sound
+						int spinSound;
+						if ( cent->gent->owner->client->ps.saber[1].spinSound
+							&& cgs.sound_precache[cent->gent->owner->client->ps.saber[1].spinSound] )
+						{
+							spinSound = cgs.sound_precache[cent->gent->owner->client->ps.saber[1].spinSound];
+						}
+						else
+						{
+							spinSound = cgi_S_RegisterSound( "sound/weapons/saber/saberspin1.wav" );
+						}
+						cgi_S_AddLoopingSound( cent->currentState.number, cent->lerpOrigin, vec3_origin, spinSound );
+					}
+					if ( cent->gent->owner->client->ps.saber[1].Length() > 0 )
+					{//only add the blade if it's on
+						CG_AddLeftSaberBlade( &cg_entities[cent->gent->owner->s.number],
+							&cg_entities[cent->gent->s.number], ent.renderfx,
+							cent->lerpOrigin, cent->lerpAngles );
+					}
+				}
+				if ( cent->gent->owner->health )
+				{
+					//make sure we can always be seen
+					ent.renderfx |= RF_PULSATE;
 				}
 			}
 			else
